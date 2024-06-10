@@ -388,6 +388,34 @@ impl DevicePath {
         total_size_in_bytes
     }
 
+    /// Calculate the size in bytes of the entire `DevicePath` starting
+    /// at `bytes`. This adds up each node's length, including the
+    /// end-entire node.
+    ///
+    /// # Errors
+    ///
+    /// The [`ByteConversionError::InvalidLength`] error will be returned
+    /// when the length of the given bytes slice cannot contain the full
+    /// [`DevicePath`] represented by the slice.
+    fn size_in_bytes_from_slice(bytes: &[u8]) -> Result<usize, ByteConversionError> {
+        let mut ptr = bytes;
+        let mut total_size_in_bytes: usize = 0;
+        loop {
+            let node = <&DevicePathNode>::try_from(ptr)?;
+            let node_size_in_bytes = usize::from(node.length());
+            total_size_in_bytes += node_size_in_bytes;
+            if total_size_in_bytes > bytes.len() {
+                return Err(ByteConversionError::InvalidLength);
+            }
+            if node.is_end_entire() {
+                break;
+            }
+            ptr = &ptr[node_size_in_bytes..];
+        }
+
+        Ok(total_size_in_bytes)
+    }
+
     /// Create a [`DevicePath`] reference from an opaque pointer.
     ///
     /// # Safety
@@ -476,6 +504,20 @@ impl Debug for DevicePath {
 impl PartialEq for DevicePath {
     fn eq(&self, other: &Self) -> bool {
         self.data == other.data
+    }
+}
+
+impl<'a> TryFrom<&[u8]> for &'a DevicePath {
+    type Error = ByteConversionError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        if DevicePath::size_in_bytes_from_slice(bytes).is_ok() {
+            unsafe {
+                return Ok(DevicePath::from_ffi_ptr(bytes.as_ptr().cast()));
+            }
+        }
+
+        Err(ByteConversionError::InvalidLength)
     }
 }
 
@@ -748,6 +790,7 @@ impl DeviceSubType {
 
 /// Error returned when atempting to convert from a `&[u8]` to a
 /// [`DevicePath`] type using:
+/// - [`DevicePath::try_from`](struct.DevicePath.html#method.try_from)
 /// - [`DevicePathNode::try_from`](struct.DevicePathNode.html#method.try_from)
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ByteConversionError {
@@ -1008,5 +1051,19 @@ mod tests {
         raw_data[2] += 1;
         dp = <&DevicePathNode>::try_from(raw_data.as_slice());
         assert!(dp.is_err());
+    }
+
+    #[test]
+    fn test_size_in_bytes_from_slice() {
+        let mut raw_data = create_raw_device_path();
+        let mut size = DevicePath::size_in_bytes_from_slice(raw_data.as_slice());
+
+        // Check that the size is the sum of the nodes' lengths.
+        assert_eq!(size.unwrap(), 6 + 8 + 4 + 6 + 8 + 4);
+
+        // Make device path larger than the raw data slice and ensure this fails
+        raw_data[2] += 99;
+        size = DevicePath::size_in_bytes_from_slice(raw_data.as_slice());
+        assert!(size.is_err());
     }
 }
