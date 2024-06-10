@@ -253,6 +253,23 @@ impl PartialEq for DevicePathNode {
     }
 }
 
+impl<'a> TryFrom<&[u8]> for &'a DevicePathNode {
+    type Error = ByteConversionError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        if mem::size_of::<DevicePathHeader>() <= bytes.len() {
+            let dp: &DevicePathNode;
+            unsafe {
+                dp = DevicePathNode::from_ffi_ptr(bytes.as_ptr().cast());
+            }
+            if dp.length() as usize <= bytes.len() {
+                return Ok(dp);
+            }
+        }
+        Err(ByteConversionError::InvalidLength)
+    }
+}
+
 /// A single device path instance that ends with either an [`END_INSTANCE`]
 /// or [`END_ENTIRE`] node. Use [`DevicePath::instance_iter`] to get the
 /// path instances in a [`DevicePath`].
@@ -729,6 +746,15 @@ impl DeviceSubType {
     pub const END_ENTIRE: DeviceSubType = DeviceSubType(0xff);
 }
 
+/// Error returned when atempting to convert from a `&[u8]` to a
+/// [`DevicePath`] type using:
+/// - [`DevicePathNode::try_from`](struct.DevicePathNode.html#method.try_from)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ByteConversionError {
+    /// The length of the given slice is not valid for its [`DevicePath`] type.
+    InvalidLength,
+}
+
 /// Error returned when converting from a [`DevicePathNode`] to a more
 /// specific node type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -953,5 +979,34 @@ mod tests {
         let owned_dp = dp.to_owned();
         let owned_dp_ref = &*owned_dp;
         assert_eq!(owned_dp_ref, dp)
+    }
+
+    #[test]
+    fn test_device_path_from_bytes() {
+        let mut raw_data = Vec::new();
+        let node = [0xa0, 0xb0];
+        let node_data = &[10, 11];
+        let mut dp;
+
+        // Raw data is less than size of a [`DevicePathNode`].
+        raw_data.push(node[0]);
+        dp = <&DevicePathNode>::try_from(raw_data.as_slice());
+        assert!(dp.is_err());
+
+        // Raw data is long enough to hold a [`DevicePathNode`].
+        raw_data.push(node[1]);
+        raw_data.extend(
+            u16::try_from(mem::size_of::<DevicePathHeader>() + node_data.len())
+                .unwrap()
+                .to_le_bytes(),
+        );
+        raw_data.extend(node_data);
+        dp = <&DevicePathNode>::try_from(raw_data.as_slice());
+        assert!(dp.is_ok());
+
+        // [`DevicePathNode`] data length exceeds the raw_data slice.
+        raw_data[2] += 1;
+        dp = <&DevicePathNode>::try_from(raw_data.as_slice());
+        assert!(dp.is_err());
     }
 }
